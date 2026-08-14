@@ -14,7 +14,13 @@ class RTFParser extends Transform {
     this.col = 1
   }
   _transform (buf, encoding, done) {
-    const text = buf.toString('ascii')
+    // latin1, NOT ascii. Node's 'ascii' decoder MASKS OFF the high bit rather than
+    // rejecting it, so a Buffer carrying literal 8-bit text (legal in an \ansi document,
+    // and what Word/Atlantis actually emit for curly quotes and dashes) had every such
+    // byte silently mangled: 0x92 -> 0x12. latin1 is byte-transparent, so codepoints
+    // U+0080..U+00FF in the token stream now stand for the raw bytes, and the
+    // interpreter decodes them against the document charset (see cmd$text).
+    const text = buf.toString('latin1')
     for (let ii = 0; ii < text.length; ++ii) {
       ++this.char
       if (text[ii] === '\n') {
