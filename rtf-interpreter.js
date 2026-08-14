@@ -65,12 +65,18 @@ class RTFInterpreter extends Writable {
       if (match) this.doc.style[prop] = initialStyle[prop]
     }
   }
+  // Charset to decode raw bytes with. 'ASCII' cannot represent anything >= 0x80, so decoding
+  // against it turns every such byte into U+FFFD -- strictly worse than assuming the ANSI
+  // default the RTF spec prescribes when a document gives no better information.
+  resolveCharset () {
+    const charset = this.group.get('charset')
+    return !charset || charset === 'ASCII' ? 'CP1252' : charset
+  }
   flushHexStore () {
     if (this.hexStore.length > 0) {
       let hexstr = this.hexStore.map(cmd => cmd.value).join('')
       this.group.addContent(new RTFSpan({
-        value: iconv.decode(
-          Buffer.from(hexstr, 'hex'), this.group.get('charset'))
+        value: iconv.decode(Buffer.from(hexstr, 'hex'), this.resolveCharset())
       }))
       this.hexStore.splice(0)
     }
@@ -110,10 +116,33 @@ class RTFInterpreter extends Writable {
     if (!this.group) { // an RTF fragment, missing the {\rtf1 header
       this.group = this.doc
     }
-    this.group.addContent(new RTFSpan(cmd))
+    let value = this.consumeSkip(cmd.value)
+    if (value === '') return
+    this.group.addContent(new RTFSpan(Object.assign({}, cmd, {value: this.decodeText(value)})))
+  }
+  // Literal 8-bit bytes are legal in the text of an \ansi document and are how Word and
+  // Atlantis write curly quotes and dashes. The tokenizer preserves them as U+0080..U+00FF
+  // (latin1 is byte-transparent); turn them back into bytes and decode against whatever
+  // charset is in force. Pure 7-bit text -- the overwhelming majority -- short-circuits.
+  decodeText (value) {
+    if (!/[\u0080-\u00ff]/.test(value)) return value
+    return iconv.decode(Buffer.from(value, 'latin1'), this.resolveCharset())
+  }
+  // \ucN declares how many fallback characters follow each \uNNNN for readers that cannot
+  // handle Unicode. They must be DROPPED. Word emits \uc1 by default, so leaving them in
+  // doubled every non-ASCII character it wrote: a \uNNNN followed by its
+  // \'xx fallback byte came out as TWO characters instead of one.
+  consumeSkip (value) {
+    if (!this.unicodeSkip) return value
+    const n = Math.min(this.unicodeSkip, value.length)
+    this.unicodeSkip -= n
+    return value.slice(n)
   }
   cmd$controlWord (cmd) {
     this.flushHexStore()
+    // Any control word other than the \uNNNN itself terminates a pending fallback run.
+    // ctrl$u re-arms it below, after this reset.
+    this.unicodeSkip = 0
     if (!this.group.type) this.group.type = cmd.value
     const method = 'ctrl$' + cmd.value.replace(/-(.)/g, (_, char) => char.toUpperCase())
     if (this[method]) {
@@ -123,6 +152,11 @@ class RTFInterpreter extends Writable {
     }
   }
   cmd$hexchar (cmd) {
+    // A \'xx sitting in a \uNNNN fallback run is one of the characters to drop.
+    if (this.unicodeSkip > 0) {
+      this.unicodeSkip -= 1
+      return
+    }
     this.hexStore.push(cmd)
   }
   cmd$error (cmd) {
@@ -142,6 +176,24 @@ class RTFInterpreter extends Writable {
   ctrl$tab () {
     this.group.addContent(new RTFSpan({ value: '\t' }))
   }
+
+  // Named character control words. Every one of these was previously unhandled, which meant
+  // it fell through to the debug branch and the character was SILENTLY DELETED -- an en dash
+  // or a curly quote written this way simply vanished from the output.
+  ctrl$emdash () { this.group.addContent(new RTFSpan({ value: '\u2014' })) }
+  ctrl$endash () { this.group.addContent(new RTFSpan({ value: '\u2013' })) }
+  ctrl$bullet () { this.group.addContent(new RTFSpan({ value: '\u2022' })) }
+  ctrl$lquote () { this.group.addContent(new RTFSpan({ value: '\u2018' })) }
+  ctrl$rquote () { this.group.addContent(new RTFSpan({ value: '\u2019' })) }
+  ctrl$ldblquote () { this.group.addContent(new RTFSpan({ value: '\u201c' })) }
+  ctrl$rdblquote () { this.group.addContent(new RTFSpan({ value: '\u201d' })) }
+  ctrl$emspace () { this.group.addContent(new RTFSpan({ value: '\u2003' })) }
+  ctrl$enspace () { this.group.addContent(new RTFSpan({ value: '\u2002' })) }
+  ctrl$qmspace () { this.group.addContent(new RTFSpan({ value: '\u2005' })) }
+  ctrl$zwnj () { this.group.addContent(new RTFSpan({ value: '\u200c' })) }
+  ctrl$zwj () { this.group.addContent(new RTFSpan({ value: '\u200d' })) }
+  ctrl$ltrmark () { this.group.addContent(new RTFSpan({ value: '\u200e' })) }
+  ctrl$rtlmark () { this.group.addContent(new RTFSpan({ value: '\u200f' })) }
 
   // alignment
   ctrl$qc () {
@@ -190,6 +242,15 @@ class RTFInterpreter extends Writable {
     // thus managing to match literally no one.
     charBuf.writeInt16LE(num, 0)
     this.group.addContent(new RTFSpan({value: iconv.decode(charBuf, 'ucs2')}))
+    // Arm the fallback run: the next \uc characters are a downlevel representation of the
+    // character just emitted and must be dropped. cmd$controlWord zeroed this immediately
+    // before dispatching here, so consecutive \uNNNN each re-arm cleanly.
+    const uc = this.group.get('uc')
+    this.unicodeSkip = uc == null ? 1 : uc
+  }
+  // Number of fallback characters following each \uNNNN. Defaults to 1 per the spec.
+  ctrl$uc (num) {
+    this.group.uc = num === false ? 0 : num
   }
   ctrl$super () {
     this.group.style.valign = 'super'
@@ -226,8 +287,11 @@ class RTFInterpreter extends Writable {
   }
 
 // encodings
+  // \ansi means Windows ANSI, which is CP1252 -- not US-ASCII. Mapping it to 'ASCII' made
+  // iconv fold every byte >= 0x80 to U+FFFD, so a document that declared \ansi without an
+  // explicit \ansicpg lost every curly quote, dash and ellipsis to a replacement char.
   ctrl$ansi () {
-    this.group.charset = 'ASCII'
+    this.group.charset = 'CP1252'
   }
   ctrl$mac () {
     this.group.charset = 'MacRoman'

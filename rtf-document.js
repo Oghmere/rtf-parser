@@ -6,6 +6,8 @@ class RTFDocument extends RTFGroup {
   constructor () {
     super()
     this.charset = 'ASCII'
+    // \ucN fallback count. The spec's default when a document never states one is 1.
+    this.uc = 1
     this.ignorable = false
     this.marginLeft = 1800
     this.marginRight = 1800

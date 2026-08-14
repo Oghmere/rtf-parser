@@ -1,13 +1,35 @@
-# rtf-parser
+# @oghma/rtf-parser
 
-This is a general RTF parser.  It takes a text stream and produces a document
-object representing the parsed document.  In and of itself, this isn't super
-useful but it's the building block for other tools to convert RTF into other
-formats.
+> **This is a fork.** It is [iarna/rtf-parser](https://github.com/iarna/rtf-parser)
+> by Rebecca Turner, maintained by [Oghmere](https://github.com/Oghmere) with fixes for
+> character-encoding and style-scoping defects that silently corrupted imported
+> manuscripts. Upstream is unmaintained (last release 1.3.3), so these could not be
+> landed there. Original work is © Rebecca Turner under the ISC licence; see
+> [LICENSE](./LICENSE), which is unchanged. Our changes are offered under the same terms,
+> and we would be glad to see any of them upstreamed.
 
+## What this fork changes
+
+All five defects below cause **silent data loss** — no error, no warning, just characters
+or formatting missing from the output. Each has a regression test in [`test/encoding.js`](./test/encoding.js)
+that fails against upstream 1.3.3.
+
+| Fix | Symptom before |
+|---|---|
+| Decode literal 8-bit text bytes against the document charset | Word/Atlantis write curly quotes as raw CP1252 bytes; `Buffer.toString('ascii')` masked off the high bit, mangling every one into an invisible control character |
+| `\ansi` means CP1252, not US-ASCII | A document declaring `\ansi` without `\ansicpg` had every `\'xx` escape ≥ 0x80 folded to `U+FFFD` |
+| Implement `\ucN` Unicode fallback skip | `\uc1` is Word's default; its fallback characters were emitted as well as the real one, **doubling** every non-ASCII character |
+| Emit named character control words | `\endash`, `\emdash`, `\bullet`, `\lquote`, `\rquote`, `\ldblquote`, `\rdblquote` and friends were unhandled, so the character was **deleted** |
+| Resolve span style once, at the group that wrote it | Closing a group re-stamped its content with the *parent's* style, so `\i text{\i0 roman}` came back with `roman` italic |
+
+On a real 315k-character manuscript this recovers 1,966 apostrophes, 1,943 quotation
+marks and 308 en dashes, and eliminates 4,059 invisible control characters — bringing the
+extracted length to exactly the `\nofchars` count the authoring tool recorded.
+
+## Usage
 
 ```js
-const parseRTF = require('rtf-parser')
+const parseRTF = require('@oghma/rtf-parser')
 const fs = require('fs')
 
 parseRTF.string('{\\rtf1\\ansi\\b hi there\\b0}', (err, doc) => {
