@@ -1,6 +1,6 @@
 {
   "name": "@oghma/rtf-parser",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "General RTF parser producing a structured document object. Oghmere fork of iarna/rtf-parser with correct character-encoding handling (literal 8-bit text, \\ansi codepage default, \\ucN Unicode fallback) and correct style scoping across nested groups.",
   "main": "index.js",
   "dependencies": {
