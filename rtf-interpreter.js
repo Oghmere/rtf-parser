@@ -2,17 +2,23 @@
 const assert = require('assert')
 const util = require('util')
 
-const Writable = require('readable-stream').Writable
+const Writable = require('stream').Writable
 const RTFGroup = require('./rtf-group.js')
 const RTFParagraph = require('./rtf-paragraph.js')
 const RTFSpan = require('./rtf-span.js')
 const iconv = require('iconv-lite')
 
+// 1256 (arabic) added — codeToCP already mapped \fcharset178 to it, so a document could
+// select it by font but `\ansicpg1256` was rejected as unavailable. Upstream PR
+// iarna/rtf-parser#33 by @facue.
 const availableCP = [
   437, 737, 775, 850, 852, 853, 855, 857, 858, 860, 861, 863, 865, 866,
-  869, 932, 936, 949, 950, 1125, 1250, 1251, 1252, 1253, 1254, 1257 ]
+  869, 932, 936, 949, 950, 1125, 1250, 1251, 1252, 1253, 1254, 1256, 1257 ]
 const codeToCP = {
   0: 'ASCII',
+  // The Symbol font is not a code page at all — see SYMBOL_TO_UNICODE below. iconv has no
+  // 'SYMBOL' encoding, so decoding against this name used to throw and take the whole
+  // document with it (iarna/rtf-parser#15).
   2: 'SYMBOL',
   77: 'MacRoman',
   128: 'SHIFT_JIS',
@@ -28,8 +34,74 @@ const codeToCP = {
   186: 'CP1257',  // baltic
   204: 'CP1251', // russian
   222: 'CP874', // thai
-  238: 'CP238', // eastern european
+  // \fcharset238 is EASTEUROPE, which is code page 1250. 'CP238' was never a code page and
+  // iconv has never known it, so any document with an east-European font threw on its first
+  // hex escape (iarna/rtf-parser#30). Upstream PR iarna/rtf-parser#33 by @facue.
+  238: 'CP1250', // eastern european
   254: 'CP437' // PC-437
+}
+
+/**
+ * Adobe Symbol encoding, 0xA0..0xFE — the range RTF actually uses it for.
+ *
+ * The Symbol font is a glyph set, not a code page: `\fcharset2` with `\'b7` means BULLET,
+ * not the CP1252 middle dot. It is how Word writes bulleted lists, which is why
+ * iarna/rtf-parser#15 ("Bullet & Numbering") is common in the wild.
+ *
+ * PARTIAL BY DESIGN: this covers the symbol half, where bullets and list glyphs live. The
+ * 0x20..0x7E half maps ASCII positions onto Greek and is left to fall through as ASCII,
+ * which is wrong for Greek but harmless for the list case and never throws. Unmapped bytes
+ * become U+FFFD rather than aborting the parse.
+ */
+const SYMBOL_TO_UNICODE = {
+  0xa0: '\u20ac', // euro
+  0xa3: '\u2264', // less-or-equal
+  0xa5: '\u221e', // infinity
+  0xa7: '\u2663', // club
+  0xa8: '\u2666', // diamond
+  0xa9: '\u2665', // heart
+  0xaa: '\u2660', // spade
+  0xab: '\u2194', // left-right arrow
+  0xac: '\u2190', // left arrow
+  0xad: '\u2191', // up arrow
+  0xae: '\u2192', // right arrow
+  0xaf: '\u2193', // down arrow
+  0xb0: '\u00b0', // degree
+  0xb1: '\u00b1', // plus-minus
+  0xb3: '\u2265', // greater-or-equal
+  0xb4: '\u00d7', // multiply
+  0xb5: '\u221d', // proportional
+  0xb6: '\u2202', // partial diff
+  0xb7: '\u2022', // BULLET -- the list glyph #15 is about
+  0xb8: '\u00f7', // divide
+  0xb9: '\u2260', // not equal
+  0xba: '\u2261', // identical
+  0xbb: '\u2248', // approx
+  0xbc: '\u2026', // ellipsis
+  0xbd: '\u23d0', // vertical bar
+  0xbe: '\u23af', // horizontal bar
+  0xbf: '\u21b5', // carriage return
+  0xd6: '\u221a', // radical
+  0xd7: '\u22c5', // dot operator
+  0xd8: '\u00ac', // not
+  0xd9: '\u2227', // logical and
+  0xda: '\u2228', // logical or
+  0xdb: '\u21d4', // double left-right arrow
+  0xdc: '\u21d0', // double left arrow
+  0xdd: '\u21d1', // double up arrow
+  0xde: '\u21d2', // double right arrow
+  0xdf: '\u21d3', // double down arrow
+  0xe5: '\u2211', // n-ary sum
+  0xf2: '\u222b' // integral
+}
+
+/** Decode Symbol-font bytes; anything outside the table becomes U+FFFD, never a throw. */
+function decodeSymbol (buf) {
+  let out = ''
+  for (const byte of buf) {
+    out += byte < 0x80 ? String.fromCharCode(byte) : (SYMBOL_TO_UNICODE[byte] || '\ufffd')
+  }
+  return out
 }
 
 class RTFInterpreter extends Writable {
@@ -72,12 +144,27 @@ class RTFInterpreter extends Writable {
     const charset = this.group.get('charset')
     return !charset || charset === 'ASCII' ? 'CP1252' : charset
   }
+  /**
+   * Decode bytes against the charset in force.
+   *
+   * Never throws. The Symbol font is handled by table (it is a glyph set, not a code page),
+   * and a charset iconv does not recognise falls back to CP1252 with a debug note instead of
+   * aborting the document — one exotic font table should not cost the reader the whole file
+   * (iarna/rtf-parser#15, #30).
+   */
+  decodeBytes (buf) {
+    const charset = this.resolveCharset()
+    if (charset === 'SYMBOL') return decodeSymbol(buf)
+    if (!iconv.encodingExists(charset)) {
+      process.emit('debug', `unknown charset ${charset}, falling back to CP1252`)
+      return iconv.decode(buf, 'CP1252')
+    }
+    return iconv.decode(buf, charset)
+  }
   flushHexStore () {
     if (this.hexStore.length > 0) {
       let hexstr = this.hexStore.map(cmd => cmd.value).join('')
-      this.group.addContent(new RTFSpan({
-        value: iconv.decode(Buffer.from(hexstr, 'hex'), this.resolveCharset())
-      }))
+      this.group.addContent(new RTFSpan({ value: this.decodeBytes(Buffer.from(hexstr, 'hex')) }))
       this.hexStore.splice(0)
     }
   }
@@ -126,7 +213,7 @@ class RTFInterpreter extends Writable {
   // charset is in force. Pure 7-bit text -- the overwhelming majority -- short-circuits.
   decodeText (value) {
     if (!/[\u0080-\u00ff]/.test(value)) return value
-    return iconv.decode(Buffer.from(value, 'latin1'), this.resolveCharset())
+    return this.decodeBytes(Buffer.from(value, 'latin1'))
   }
   // \ucN declares how many fallback characters follow each \uNNNN for readers that cannot
   // handle Unicode. They must be DROPPED. Word emits \uc1 by default, so leaving them in
@@ -237,11 +324,23 @@ class RTFInterpreter extends Writable {
     this.group.style.italic = set !== 0
   }
   ctrl$u (num) {
-    var charBuf = Buffer.alloc ? Buffer.alloc(2) : new Buffer(2)
-    // RTF, for reasons, represents unicode characters as signed integers
-    // thus managing to match literally no one.
-    charBuf.writeInt16LE(num, 0)
-    this.group.addContent(new RTFSpan({value: iconv.decode(charBuf, 'ucs2')}))
+    // RTF represents a unicode character as a SIGNED 16-bit integer, so code units above
+    // 32767 are written negative. Plenty of producers emit the unsigned value instead, and
+    // `writeInt16LE` threw ERR_OUT_OF_RANGE on those — an uncaught crash, not a bad
+    // character. That is upstream iarna/rtf-parser#28, and it is also why the surrogate
+    // pair in iarna/rtf-parser#15 (\u55357 \u56842, an emoji) broke the interpreter.
+    //
+    // Accept both forms. A negative value is normalised to its unsigned counterpart; a
+    // value outside the UTF-16 code-unit range is not representable and is skipped rather
+    // than thrown, so one malformed escape cannot abort the whole document.
+    const code = typeof num === 'number' && num < 0 ? num + 0x10000 : num
+    if (!Number.isInteger(code) || code < 0 || code > 0xffff) {
+      process.emit('debug', 'ctrl$u: skipping out-of-range value', num)
+    } else {
+      // fromCharCode, not a Buffer round-trip: this is already a UTF-16 code unit, and
+      // adjacent surrogate halves then combine into one astral character naturally.
+      this.group.addContent(new RTFSpan({value: String.fromCharCode(code)}))
+    }
     // Arm the fallback run: the next \uc characters are a downlevel representation of the
     // character just emitted and must be dropped. cmd$controlWord zeroed this immediately
     // before dispatching here, so consecutive \uNNNN each re-arm cleanly.
@@ -428,6 +527,21 @@ class RTFInterpreter extends Writable {
   }
   ctrl$margb (value) {
     this.doc.marginBottom = value
+  }
+
+  /**
+   * Embedded pictures (iarna/rtf-parser#32).
+   *
+   * RTF stores an image as a hex (or binary) payload inside a `{\pict ...}` group. With no
+   * handler that payload was decoded as ordinary text, so the document's `content` gained a
+   * span of raw hex — 'before 89504e470d0a...' — corrupting text extraction and word counts.
+   *
+   * Marking the group ignorable drops the payload the same way `\stylesheet` and `\info` are
+   * dropped. The image is not surfaced as a node: that would be a new public type, and this
+   * is a data-corruption fix. Callers who need the bytes still have the raw RTF.
+   */
+  ctrl$pict () {
+    this.group.ignorable = true
   }
 
 // unsupported (and we need to ignore content)

@@ -4,8 +4,7 @@
   "description": "General RTF parser producing a structured document object. Oghmere fork of iarna/rtf-parser with correct character-encoding handling (literal 8-bit text, \\ansi codepage default, \\ucN Unicode fallback) and correct style scoping across nested groups.",
   "main": "index.js",
   "dependencies": {
-    "iconv-lite": "^0.4.15",
-    "readable-stream": "^2.2.2"
+    "iconv-lite": "^0.7.3"
   },
   "devDependencies": {
     "standard": "^8.6.0",

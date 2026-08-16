@@ -1,5 +1,5 @@
 'use strict'
-const Transform = require('readable-stream').Transform
+const Transform = require('stream').Transform
 
 class RTFParser extends Transform {
   constructor () {
