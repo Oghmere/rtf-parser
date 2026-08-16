@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+<a name="2.1.0"></a>
+## 2.1.0 (2026-08-16)
+
+Sweeps the remaining open defects on `iarna/rtf-parser` and adopts two stalled upstream
+pull requests. Each change has a regression test built from the reporter's own repro.
+
+### Bug Fixes
+
+* **interpreter:** accept both the signed and unsigned forms of `\uN`. The spec writes code
+  units above 32767 as negative; many producers emit the unsigned value, and `writeInt16LE`
+  threw `ERR_OUT_OF_RANGE` on those — a crash, not a bad character. Also fixes the emoji
+  surrogate-pair break, since both halves exceed 32767. Adopts upstream PR #28 by @UKayeF,
+  extended so the signed form keeps working. Closes upstream #28, completes #40.
+* **interpreter:** map `\fcharset238` to CP1250 and make `\ansicpg1256` available. `CP238`
+  was never a code page and iconv never knew it, so east-European fonts threw. Adopts
+  upstream PR #33 by @facue. Closes upstream #30, #33.
+* **interpreter:** decode the Symbol font rather than throwing on it. `\fcharset2` is a
+  glyph set, not a code page; it is how Word writes bullets, and it took whole documents
+  down. Adds the Adobe Symbol table for 0xA0..0xFE. Any charset iconv does not recognise now
+  falls back to CP1252 with a debug note instead of aborting. Closes upstream #15.
+* **interpreter:** skip `\pict` payloads instead of emitting them as text — image hex was
+  landing in the document content and corrupting text extraction. Closes upstream #32.
+
+### Dependencies
+
+* **deps:** drop `readable-stream` — only `Writable` and `Transform` were used, both built
+  into node. Runtime dependencies go from two to one.
+* **deps:** `iconv-lite@^0.7.3` (was `^0.4.15`, dated 2018). Closes upstream #37.
+
 <a name="2.0.0"></a>
 ## 2.0.0 (2026-08-13)
 

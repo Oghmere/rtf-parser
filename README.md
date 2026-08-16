@@ -26,6 +26,31 @@ On a real 315k-character manuscript this recovers 1,966 apostrophes, 1,943 quota
 marks and 308 en dashes, and eliminates 4,059 invisible control characters — bringing the
 extracted length to exactly the `\nofchars` count the authoring tool recorded.
 
+## Upstream issues this fork closes
+
+Beyond the defects above, this fork resolves the open reports on
+[iarna/rtf-parser](https://github.com/iarna/rtf-parser) that are bugs rather than feature
+requests. Where the reporter supplied a reproduction, that exact input is the test.
+
+| Upstream | What was wrong |
+|---|---|
+| [#41](https://github.com/iarna/rtf-parser/issues/41) | Styles lost inside a group — `{\i text}` came back unstyled |
+| [#40](https://github.com/iarna/rtf-parser/issues/40) | `\uN` downlevel fallback emitted as a literal `?` |
+| [#38](https://github.com/iarna/rtf-parser/issues/38) | Umlauts written as `\uN` came through doubled |
+| [#37](https://github.com/iarna/rtf-parser/issues/37) | Dependencies years out of date |
+| [#32](https://github.com/iarna/rtf-parser/issues/32) | `\pict` image hex leaked into the document text |
+| [#30](https://github.com/iarna/rtf-parser/issues/30) | `\fcharset238` mapped to a code page that does not exist |
+| [#15](https://github.com/iarna/rtf-parser/issues/15) | Symbol font (bullets) threw; emoji surrogate pairs threw |
+
+Two stalled upstream pull requests are adopted with credit:
+
+- **[#28](https://github.com/iarna/rtf-parser/pull/28)** by [@UKayeF](https://github.com/UKayeF) — `\uN` unsigned overflow. Their diagnosis was right; the fix here handles the signed form too, which a straight swap to `writeUInt16LE` would have broken.
+- **[#33](https://github.com/iarna/rtf-parser/pull/33)** by [@facue](https://github.com/facue) — `\fcharset238` → CP1250, and CP1256 added.
+
+[**#29**](https://github.com/iarna/rtf-parser/pull/29) by [@wwwildcat](https://github.com/wwwildcat) proposed six of the named character control words; this fork emits those and eight more. They got there first, five years earlier.
+
+**Not addressed:** [#35](https://github.com/iarna/rtf-parser/issues/35) (tables) is a substantial feature, not a defect. [#34](https://github.com/iarna/rtf-parser/issues/34) is a support question about callbacks.
+
 ## Usage
 
 ```js
