@@ -7,8 +7,8 @@
     "iconv-lite": "^0.7.3"
   },
   "devDependencies": {
-    "standard": "^8.6.0",
-    "tap": "^9.0.3"
+    "standard": "^17.1.2",
+    "tap": "^21.7.5"
   },
   "scripts": {
     "test": "standard && tap test/",
